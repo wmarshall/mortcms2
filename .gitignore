@@ -37,3 +37,5 @@ Thumbs.db
 # Other
 # TODO: Make this a script generated thing
 .venv
+*.sublime-project
+*.sublime-workspace
