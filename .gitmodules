@@ -1,0 +1,3 @@
+[submodule "mortcms/content"]
+	path = mortcms/content
+	url = git@mort11.org:mortcms-content
