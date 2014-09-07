@@ -1,9 +1,9 @@
 #!/usr/bin/env python2
 from flask import Flask, flash, render_template, redirect, abort, request,\
-		session, current_app, safe_join, jsonify, send_from_directory
+		session, current_app, safe_join, jsonify, send_from_directory, get_flashed_messages
 from flask.ext.sqlalchemy import SQLAlchemy
 
-from uuid import uuid4
+from uuid import uuid4, UUID
 from base64 import b64decode
 
 from functools import wraps
@@ -93,10 +93,10 @@ def do_temp_redirect(guid):
 	temp_redirect = None
 	with transaction_on(db):
 		try:
-			temp_redirect = TemporaryRedirect.query\
+			temp_redirect = TempRedirect.query\
 					.filter_by(id = UUID(guid))\
 					.first_or_404()
-			if expires is not None and expires < datetime.now():
+			if temp_redirect.expires is not None and temp_redirect.expires < datetime.now():
 				abort(410)
 			flash(temp_redirect.data)
 			db.session.delete(temp_redirect)
@@ -115,11 +115,12 @@ def sanitize_session():
 	else:
 		session['cms_access'] = User.query\
 				.filter_by(id = session['user_id'])\
-				.first_or_404().cms_access
+				.first_or_404().cms_access and not session.get('needs_pass_reset', False)
 
 @app.before_request
 def force_setpass():
-	if session.get('needs_pass_reset') and not request.url.endswith('/setpass'):
+	if session.get('needs_pass_reset')\
+		and request.path != '/setpass' and not request.path.startswith('/static'):
 		flash({'user_id':session['user_id']})
 		return redirect('/setpass')
 
@@ -148,11 +149,10 @@ def logout():
 @https_required
 def set_pass():
 	if request.method == 'GET':
-		user_id = get_flashed_messages()['user_id']
-		session['user_id'] = user_id # Force a login so that next stage of auth completes
-		session['needs_pass_reset'] = True #Flag user as needing password reset
-		return render_template('special/setpass.html', 
-				user_id=user_id)
+		if not session['user_id']:
+			session['user_id']= get_flashed_messages()[0]['user_id'] # Force a login so that next stage of auth completes
+			session['needs_pass_reset'] = True #Flag user as needing password reset
+		return render_page('setpass', user_id=session['user_id'])
 	else:
 		with transaction_on(db):
 			user = User.query\
@@ -312,7 +312,7 @@ def favicon():
 
 @app.route('/')
 @app.route('/<path:page>')
-def render_page(page=None):
+def render_page(page=None, **context):
 	if page is None:
 		page = 'index'
 	possible_names = [p + '.html' for p in [page, page+'/index']]
@@ -341,13 +341,13 @@ def render_page(page=None):
 		template_path = template_path[:-len(".html")] + "/"
 		# Trim app.root path and <page>.html from initial path
 	template_path = template_path[len(content_path):]
-	return render_template(possible_names, template_path = template_path)
+	return render_template(possible_names, template_path = template_path, **context)
 
 
 @app.errorhandler(403)
 def forbidden(e):
-	return render_template('errors/403.html')
+	return render_template('errors/403.html'), 403
 
 @app.errorhandler(404)
 def not_found(e):
-	return render_template('errors/404.html')
+	return render_template('errors/404.html'), 404
