@@ -3,6 +3,8 @@ from flask import Flask, flash, render_template, redirect, abort, request,\
 		session, current_app, safe_join, jsonify, send_from_directory, get_flashed_messages
 from flask.ext.sqlalchemy import SQLAlchemy
 
+from jinja2 import TemplateNotFound
+
 from uuid import uuid4, UUID
 from base64 import b64decode
 
@@ -161,8 +163,11 @@ def set_pass():
 			user.hash = None
 			user.salt = None
 			user.login(request.get_json()['password'])
-			del session['needs_pass_reset']
-			return redirect('/')
+			# Blow up session
+			session.pop('user_id', None)
+			session.pop('cms_access', None)
+			session.pop('needs_pass_reset', None)
+			return ''
 
 @app.route('/setemail', methods=['POST'])
 @https_required
@@ -341,7 +346,10 @@ def render_page(page=None, **context):
 		template_path = template_path[:-len(".html")] + "/"
 		# Trim app.root path and <page>.html from initial path
 	template_path = template_path[len(content_path):]
-	return render_template(possible_names, template_path = template_path, **context)
+	try:
+		return render_template(possible_names, template_path = template_path, **context)
+	except TemplateNotFound:
+		abort(404)
 
 
 @app.errorhandler(403)
