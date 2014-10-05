@@ -1,96 +1,11 @@
 #!/usr/bin/env python2
-from flask import Flask, flash, render_template, redirect, abort, request,\
-		session, current_app, safe_join, jsonify, send_from_directory, get_flashed_messages
-from flask.ext.sqlalchemy import SQLAlchemy
+from flask import flash, render_template, redirect, abort, request,\
+		session, safe_join, jsonify, send_from_directory, get_flashed_messages
+from os import path
 
-from jinja2 import TemplateNotFound
-
-from uuid import uuid4, UUID
-from base64 import b64decode
-
-from functools import wraps
-
-from shutil import copyfile
-
-from os import path, makedirs, walk, environ
-
-from Crypto.Protocol.KDF import PBKDF2
-from Crypto.Random.random import getrandbits
-from Crypto.Util.number import long_to_bytes
-
+from .app import app, db, https_required, cms_access_required
+from .database import GUID, transaction_on, User, TempRedirect, RestrictedPage
 from .util import ValidationError, LoginError
-
-from .database import GUID, transaction_on
-
-app = Flask(__name__, template_folder='content/templates', static_folder='content/static')
-app.config.update({
-	'SQLALCHEMY_DATABASE_URI':'sqlite:///'+path.join(environ['HOME'],'mortcms.db'), #TODO: FROM ENV
-	'SECRET_KEY':long_to_bytes(getrandbits(32)),
-	'REQUIRE_HTTPS': False
-})
-db = SQLAlchemy(app)
-
-
-def https_required(f):
-    @wraps(f)
-    def redirect_https(*args, **kwargs):
-        if app.config['REQUIRE_HTTPS'] and \
-                not request.url.startswith("https"):
-            # len(http://) = 7
-            redirect('https://'+request.url[7:])
-        return f(*args, **kwargs)
-    return redirect_https
-
-@https_required
-def cms_access_required(f):
-    @wraps(f)
-    def fail_if_no_access(*args, **kwargs):
-        if not session['cms_access']:
-            abort(403)
-        return f(*args, **kwargs)
-    return fail_if_no_access
-
-
-class User(db.Model):
-	__tablename__ = 'user'
-	id = db.Column(GUID, primary_key=True, default=uuid4)
-	name = db.Column(db.Text, nullable=False)
-	email = db.Column(db.Text, nullable=False, unique=True)
-	salt = db.Column(db.LargeBinary)
-	hash = db.Column(db.LargeBinary)
-	cms_access = db.Column(db.Boolean, nullable=False, default=False)
-
-	@db.validates('email')
-	def validate_email(self, key, email_addr):
-		if '@' not in email_addr:
-			raise ValidationError('email')
-		return email_addr
-
-	def login(self, password):
-		if self.hash is None and self.salt is None:
-			# Set new password
-			self.salt = long_to_bytes(getrandbits(128))
-			self.hash = PBKDF2(password, self.salt)
-		else:
-			#actually check
-			if self.hash != PBKDF2(password, self.salt):
-				raise LoginError('password')
-		session['user_id'] = self.id
-
-class TempRedirect(db.Model):
-	__tablename__ = 'redirect'
-	id = db.Column(GUID, primary_key=True, default=uuid4)
-	target = db.Column(db.Text, nullable=False)
-	expires = db.Column(db.DateTime)
-	data = db.Column(db.PickleType)
-
-	def get_link(self):
-		return '/tr/%s' % self.id
-
-class RestrictedPage(db.Model):
-	__tablename__ = 'restricted'
-	path = db.Column(db.Text, primary_key=True)
-	cms_access_required = db.Column(db.Boolean, default=False, nullable=False)
 
 @app.route('/tr/<guid>')
 def do_temp_redirect(guid):
@@ -194,126 +109,6 @@ def forgot_pass():
 		#send_forgot_pass_email(email, temp_redirect)
 	return ''
 
-@app.route('/tree')
-@cms_access_required
-def content_tree():
-	# Generate tree structure representing content folder
-	# {"content":{"static":{...}}}
-	tree = {"content":{}}
-	content_path = path.join(app.root_path, 'content')
-	for dirpath, dirs, files in walk(content_path):
-		# app.root_path is absolute, we want tuples that look like
-		# content/blah/blah
-		dirpath = dirpath[len(content_path) - (len('content')):]
-		# remove hidden files
-		files = [f for f in files if f[0] != '.']
-		# must modify dirs in place, so have to get crafty
-		dirs_to_remove = [d for d in dirs if d[0] == '.']
-		if dirpath == 'content':
-			dirs_to_remove.append('libraries')
-		for name in dirs_to_remove:
-			dirs.remove(name)
-		current_dir = tree
-		# Move current_dir to where we need to be
-		for dirname in dirpath.split('/'):
-			current_dir = current_dir[dirname]
-		# Set up next level
-		for dirname in dirs:
-			current_dir[dirname] = {}
-		# Define filenames, don't know what info to send with
-		for fname in files:
-			current_dir[fname] = None
-	# raise Exception()
-	return jsonify(content = tree['content'])
-
-@app.route('/raw/<path:file>', methods=['GET', 'POST'])
-@cms_access_required
-def get_raw_file(file):
-	content_path = path.join(app.root_path, 'content')
-	file_path = safe_join(content_path,file)
-	if request.method == 'GET':
-		# Raises a NotFound which gets interpreted as a 200 for some reason
-		# raise Exception
-		return send_from_directory(content_path, file, mimetype='text/plain')
-	elif request.method == 'POST':
-		# write to file
-		with open(file_path, 'w') as f:
-			content = request.get_json()['content']
-			if request.get_json()['binary']:
-				# decode base64
-				content = b64decode(content)
-			else:
-				content = content.encode('UTF8')
-			f.write(content)
-			return ''
-
-@app.route('/preview', methods=['POST'])
-@cms_access_required
-def preview_template():
-	return render_template_string(
-			request.get_json()['new_template'], 
-			**request.get_json()['context']
-		)
-
-@cms_access_required
-def new_file(template, path_prefix):
-	content_path = path.join(app.root_path, 'content')
-	metatemplate_path = path.join(content_path, 'metatemplates')
-	prefixed_path = path.join(content_path, path_prefix)
-	# check that path does not exist
-	final_path = path.join(prefixed_path, request.get_json()['path'])
-	if path.exists(final_path):
-		abort(409)
-	dirname = path.dirname(final_path)
-
-	if not path.exists(dirname):
-		makedirs(dirname) # Doesn't fail if parents exist
-		# But does fail if last dir exists, so wrap for safety
-	copyfile(path.join(metatemplate_path,template), final_path)
-
-@app.route('/new/page', methods=['POST'])
-def new_page():
-	new_file(template='page.html', path_prefix='templates/pages')
-	if request.get_json()['restrict'] is not None:
-		with transaction_on(db):
-			restricted_page = RestrictedPage(
-					path=request.get_json()['path'],
-					cms_access_required=(request.get_json()['restrict'] == 'cms_access')
-				)
-			db.session.add(restricted_page)
-	return ''
-
-@app.route('/new/base', methods=['POST'])
-def new_base():
-	new_file(template='base.html', path_prefix='templates/bases')
-	return ''
-
-@app.route('/new/script', methods=['POST'])
-def new_script():
-	new_file(template='script.js', path_prefix='static/js')
-	return ''
-
-@app.route('/new/stylesheet', methods=['POST'])
-def new_stylesheet():
-	new_file(template='stylesheet.css', path_prefix='static/css')
-	return ''
-
-@app.route('/new/user', methods=['POST'])
-@cms_access_required
-def new_user():
-	with transaction_on(db):
-		newuser = User(
-				name=request.get_json()['name'],
-				email=request.get_json()['email'],
-				cms_access=request.get_json()['cms_access']
-			)
-		db.session.add(newuser)
-		temp_redirect = TempRedirect(target='/setpass', 
-				data={'user_id':newuser.id})
-		db.session.add(temp_redirect)
-		# send_welcome_email(newuser, temp_redirect)
-	return ''
-
 @app.route('/favicon.ico')
 def favicon():
 	return redirect('/static/favicon.ico')
@@ -348,11 +143,8 @@ def render_page(page=None, **context):
 	if not path.exists(template_path):
 		template_path = template_path[:-len(".html")] + "/"
 		# Trim app.root path and <page>.html from initial path
-	template_path = template_path[len(content_path):]
-	try:
-		return render_template(possible_names, template_path = template_path, **context)
-	except TemplateNotFound:
-		abort(404)
+	template_path = template_path[len(content_path):]	
+	return render_template(possible_names, template_path = template_path, **context)
 
 
 @app.errorhandler(403)

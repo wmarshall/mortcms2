@@ -1,6 +1,3 @@
-
-
-
 class ValidationError(Exception):
     def __init__(self, property, message = ''):
         self.property = property
