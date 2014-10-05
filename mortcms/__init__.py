@@ -228,13 +228,14 @@ def content_tree():
 @cms_access_required
 def get_raw_file(file):
 	content_path = path.join(app.root_path, 'content')
+	file_path = safe_join(content_path,file)
 	if request.method == 'GET':
 		# Raises a NotFound which gets interpreted as a 200 for some reason
 		# raise Exception
 		return send_from_directory(content_path, file, mimetype='text/plain')
-	else:
+	elif request.method == 'POST':
 		# write to file
-		with open(safe_join(content_path,file), 'w') as f:
+		with open(file_path, 'w') as f:
 			content = request.get_json()['content']
 			if request.get_json()['binary']:
 				# decode base64
@@ -354,8 +355,8 @@ def render_page(page=None, **context):
 
 @app.errorhandler(403)
 def forbidden(e):
-	return render_template('errors/403.html'), 403
+	return render_template('errors/403.html', template_path = '/templates/errors/403.html'), 403
 
 @app.errorhandler(404)
 def not_found(e):
-	return render_template('errors/404.html'), 404
+	return render_template('errors/404.html', template_path = '/templates/errors/404.html'), 404
