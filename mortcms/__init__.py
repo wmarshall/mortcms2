@@ -18,7 +18,7 @@ from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Random.random import getrandbits
 from Crypto.Util.number import long_to_bytes
 
-from .custom import GUID, ValidationError, LoginError, transaction_on
+from .util import GUID, ValidationError, LoginError, transaction_on
 
 app = Flask(__name__, template_folder='content/templates', static_folder='content/static')
 app.config.update({
